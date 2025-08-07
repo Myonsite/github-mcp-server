@@ -1,0 +1,251 @@
+version: '3.8'
+
+services:
+  # GitHub MCP Server (Main)
+  github-mcp:
+    image: ghcr.io/github/github-mcp-server:latest
+    container_name: ai-first-github-mcp
+    environment:
+      - GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+    ports:
+      - "8001:8080"
+    restart: unless-stopped
+    networks:
+      - ai-first-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      - "ai-first.service=github-mcp"
+      - "ai-first.description=GitHub MCP Server"
+
+  # SQLite MCP Server
+  sqlite-mcp:
+    image: node:18-alpine
+    container_name: ai-first-sqlite-mcp
+    working_dir: /app
+    volumes:
+      - ./mcp-servers/sqlite:/app
+      - ./data/sqlite:/data
+    environment:
+      - NODE_ENV=production
+      - SQLITE_DB_PATH=/data/ai-first.db
+    ports:
+      - "8002:8080"
+    restart: unless-stopped
+    networks:
+      - ai-first-network
+    command: >
+      sh -c "
+        npm install -g @modelcontextprotocol/server-sqlite &&
+        npx @modelcontextprotocol/server-sqlite /data/ai-first.db
+      "
+    labels:
+      - "ai-first.service=sqlite-mcp"
+      - "ai-first.description=SQLite MCP Server"
+
+  # Filesystem MCP Server
+  filesystem-mcp:
+    image: node:18-alpine
+    container_name: ai-first-filesystem-mcp
+    working_dir: /app
+    volumes:
+      - ./mcp-servers/filesystem:/app
+      - ./data/filesystem:/workspace
+      - /Users/${USER}/Documents:/home/documents:ro
+      - /Users/${USER}/Downloads:/home/downloads:ro
+    environment:
+      - NODE_ENV=production
+      - WORKSPACE_PATH=/workspace
+    ports:
+      - "8003:8080"
+    restart: unless-stopped
+    networks:
+      - ai-first-network
+    command: >
+      sh -c "
+        npm install -g @modelcontextprotocol/server-filesystem &&
+        npx @modelcontextprotocol/server-filesystem /workspace
+      "
+    labels:
+      - "ai-first.service=filesystem-mcp"
+      - "ai-first.description=Filesystem MCP Server"
+
+  # Memory MCP Server
+  memory-mcp:
+    image: node:18-alpine
+    container_name: ai-first-memory-mcp
+    working_dir: /app
+    volumes:
+      - ./mcp-servers/memory:/app
+      - ./data/memory:/data
+    environment:
+      - NODE_ENV=production
+      - MEMORY_STORE_PATH=/data
+    ports:
+      - "8004:8080"
+    restart: unless-stopped
+    networks:
+      - ai-first-network
+    command: >
+      sh -c "
+        npm install -g @modelcontextprotocol/server-memory &&
+        npx @modelcontextprotocol/server-memory --store-path /data
+      "
+    labels:
+      - "ai-first.service=memory-mcp"
+      - "ai-first.description=Memory MCP Server"
+
+  # PostgreSQL Database (for PostgreSQL MCP)
+  postgres-db:
+    image: postgres:15-alpine
+    container_name: ai-first-postgres-db
+    environment:
+      - POSTGRES_DB=ai_first
+      - POSTGRES_USER=ai_first_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-ai_first_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - ai-first-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_first_user -d ai_first"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      - "ai-first.service=postgres-db"
+      - "ai-first.description=PostgreSQL Database"
+
+  # PostgreSQL MCP Server
+  postgres-mcp:
+    image: node:18-alpine
+    container_name: ai-first-postgres-mcp
+    working_dir: /app
+    volumes:
+      - ./mcp-servers/postgres:/app
+    environment:
+      - NODE_ENV=production
+      - POSTGRES_CONNECTION_STRING=postgresql://ai_first_user:${POSTGRES_PASSWORD:-ai_first_password}@postgres-db:5432/ai_first
+    ports:
+      - "8005:8080"
+    restart: unless-stopped
+    networks:
+      - ai-first-network
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+    command: >
+      sh -c "
+        npm install -g @modelcontextprotocol/server-postgres &&
+        npx @modelcontextprotocol/server-postgres
+      "
+    labels:
+      - "ai-first.service=postgres-mcp"
+      - "ai-first.description=PostgreSQL MCP Server"
+
+  # Web MCP Server (for web searches)
+  web-mcp:
+    image: node:18-alpine
+    container_name: ai-first-web-mcp
+    working_dir: /app
+    volumes:
+      - ./mcp-servers/web:/app
+    environment:
+      - NODE_ENV=production
+      - BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY}
+    ports:
+      - "8006:8080"
+    restart: unless-stopped
+    networks:
+      - ai-first-network
+    command: >
+      sh -c "
+        npm install -g @modelcontextprotocol/server-brave-search &&
+        npx @modelcontextprotocol/server-brave-search
+      "
+    labels:
+      - "ai-first.service=web-mcp"
+      - "ai-first.description=Web Search MCP Server"
+
+  # AI-First Dashboard (Management UI)
+  ai-first-dashboard:
+    image: node:18-alpine
+    container_name: ai-first-dashboard
+    working_dir: /app
+    volumes:
+      - ./dashboard:/app
+    environment:
+      - NODE_ENV=production
+      - GITHUB_MCP_URL=http://github-mcp:8080
+      - SQLITE_MCP_URL=http://sqlite-mcp:8080
+      - FILESYSTEM_MCP_URL=http://filesystem-mcp:8080
+      - MEMORY_MCP_URL=http://memory-mcp:8080
+      - POSTGRES_MCP_URL=http://postgres-mcp:8080
+      - WEB_MCP_URL=http://web-mcp:8080
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    networks:
+      - ai-first-network
+    depends_on:
+      - github-mcp
+      - sqlite-mcp
+      - filesystem-mcp
+      - memory-mcp
+      - postgres-mcp
+      - web-mcp
+    command: >
+      sh -c "
+        npm install express cors axios &&
+        node server.js
+      "
+    labels:
+      - "ai-first.service=dashboard"
+      - "ai-first.description=AI-First Management Dashboard"
+
+  # Monitoring and Logging
+  monitoring:
+    image: node:18-alpine
+    container_name: ai-first-monitoring
+    working_dir: /app
+    volumes:
+      - ./monitoring:/app
+      - ./logs:/logs
+    environment:
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    networks:
+      - ai-first-network
+    command: >
+      sh -c "
+        npm install express prometheus-client &&
+        node monitor.js
+      "
+    labels:
+      - "ai-first.service=monitoring"
+      - "ai-first.description=System Monitoring"
+
+volumes:
+  postgres_data:
+    driver: local
+    labels:
+      - "ai-first.volume=postgres-data"
+      - "ai-first.description=PostgreSQL Data"
+
+networks:
+  ai-first-network:
+    driver: bridge
+    labels:
+      - "ai-first.network=main"
+      - "ai-first.description=AI-First Company Network" 
